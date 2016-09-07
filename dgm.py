@@ -11,30 +11,32 @@ class solver(object):
         self.phi = phi
         self.k = k
         self.lamb = lamb
-        self.ep = 1e-12
+        self.ep = 1e-8
         self.basisType = basis
         
         # Number of groups
         self.G = len(self.sig_t)
         
         self.getBasis()
+        self.calcCrossSections()
         
     def calcCrossSections(self):
         # Get total cross section
         self.Sig_t = np.sum(self.sig_t * self.phi) / np.sum(self.phi) 
         # Assume isotropic flux, i.e. psi = phi / (4\pi)
-        self.delta_i = np.array([np.sum(self.basis[i] * (self.sig_t - self.Sig_t) * self.phi) for i in range(self.G)]) / np.sum(self.phi)
+        self.delta = self.basis.dot((self.sig_t - self.Sig_t) * self.phi) / np.sum(self.phi)
         
         # Get scattering cross section
-        self.Sig_s_i = np.zeros(self.G)
+        self.Sig_s = np.zeros(self.G)
         for i in range(self.G):
             for g in range(self.G):
-                self.Sig_s_i[i] += np.sum(self.basis[i][g] * self.sig_s[:,g] * self.phi)
-        self.Sig_s_i /= np.sum(self.phi) 
+                self.Sig_s[i] += np.sum(self.basis[i][g] * self.sig_s[:,g] * self.phi)
+        self.Sig_s /= np.sum(self.phi) 
         
         # Get fission cross section
-        self.vSig_f = np.array([np.sum(self.basis[i] * self.vsig_f * self.phi) for i in range(self.G)]) / np.sum(self.phi)
-        self.Chi = np.array([np.sum(self.basis[i] * self.chi) for i in range(self.G)]) 
+        self.vSig_f = self.basis.dot(self.vsig_f * self.phi) / np.sum(self.phi)
+        self.Chi = self.basis.dot(self.chi) 
+
         
     def getBasis(self):
         if self.basisType == 'dlp':
@@ -45,33 +47,35 @@ class solver(object):
         self.basis = np.ones((self.G, self.G))
         # Compute the linear basis function
         self.basis[:,1] = [(self.G - 1 - (2 * j)) / (self.G - 1) for j in range(self.G)]
-        # end if 2 group
-        if self.G == 2: return
         
-        # Use Gram Schmidt to find the remaining basis functions
-        for i in range(2, self.G):
-            for j in range(self.G):
-                C0 = (i - 1) * (self.G - 1 + i)
-                C1 = (2 * i - 1) * (self.G - 1 - 2 * j)
-                C2 = i * (self.G - i)
-                self.basis[j,i] = (C1 * self.basis[j,i - 1] - C0 * self.basis[j,i - 2]) / C2
+        # Compute higher basis functions if needed
+        if not self.G == 2:
+            # Use Gram Schmidt to find the remaining basis functions
+            for i in range(2, self.G):
+                for j in range(self.G):
+                    C0 = (i - 1) * (self.G - 1 + i)
+                    C1 = (2 * i - 1) * (self.G - 1 - 2 * j)
+                    C2 = i * (self.G - i)
+                    self.basis[j,i] = (C1 * self.basis[j,i - 1] - C0 * self.basis[j,i - 2]) / C2
                 
-        # Orthogonalize the basis functions
-        self.basis, _ = LA.qr(self.basis, 'full')
-        # Structure so that self.basis[1] provides a vector of the linear function
-        self.basis = self.basis.T
+#         # Orthogonalize the basis functions
+#         self.basis, _ = LA.qr(self.basis, 'full')
+#         # Structure so that self.basis[1] provides a vector of the linear function
+#         self.basis = self.basis.T
         
     def update(self):
         # Update k
-        dk = self.Chi[0] * np.sum(self.vSig_f) / (self.Sig_t + self.delta_i[0] - np.sum(self.Sig_s_i))
+        dk = self.Chi[0] * np.sum(self.vSig_f[0]) / (self.Sig_t + self.delta[0] - self.Sig_s[0])
         self.k = (1 - self.lamb) * self.k + self.lamb * dk
         # normalize the flux to phi_0 = 1
-        self.phi[0] = 1.0
+        phi = np.ones(self.G)
         # Compute higher order phi
         for i in range(1, self.G):
-            dp = (np.sum(self.Sig_s_i[i]) + self.Chi[i] / self.k * np.sum(self.vSig_f) - self.delta_i[i]) / self.Sig_t
-            print i, dp
-            self.phi[i] = (1 - self.lamb) * self.phi[i] + self.lamb * dp
+            dp = (self.Sig_s[i] + self.Chi[i] / self.k * np.sum(self.vSig_f[0]) - self.delta[i]) / self.Sig_t
+            phi[i] = (1 - self.lamb) * phi[i] + self.lamb * dp
+            
+        self.phi = self.basis.dot(phi)
+        self.phi /= self.phi[0]
         
     def solve(self):
         it = 0
@@ -79,14 +83,21 @@ class solver(object):
         if self.G == 2:
             while True:
                 print 'iteration = {:3}, f = {:12.10f}, k = {:12.10f}, eps = {:12.10f}'.format(it, self.phi[1], self.k, ep)
-                oldf = self.phi[1]
+                old = self.phi[1]
                 self.calcCrossSections()
                 self.update()
                 it += 1
                 if ep < self.ep: 
                     break
                 else:
-                    ep = abs(oldf - self.phi[1])
+                    ep = abs(old - self.phi[1])
+                
+    def output(self):
+        print self.Sig_t
+        print self.delta
+        print self.Sig_s
+        print self.vSig_f
+#         print self.Chi
 
 class twoGroupSolver(object):
     def __init__(self, sig_t, sig_s, vsig_f, f=1, k=1, lamb=1):
@@ -96,10 +107,10 @@ class twoGroupSolver(object):
         self.f = f
         self.k = k
         self.lamb = lamb
-        self.ep = 1e-12
+        self.ep = 1e-1
         
         self.getBasis()
-        self.solve()
+        self.calcCrossSections()
         
     def calcCrossSections(self):
         self.Sig_t_0 = (self.sig_t[0] + self.sig_t[1] * self.f) / (1 + self.f)
@@ -133,7 +144,12 @@ class twoGroupSolver(object):
                 break
             else:
                 ep = abs(oldf - self.f)
-        
+                
+    def output(self):
+        print self.Sig_t_0
+        print self.del_1
+        print self.Sig_s_0, self.Sig_s_1
+        print self.vSig_f
         
 if __name__ == '__main__':
     sig_t = np.array([1,2])
@@ -142,6 +158,5 @@ if __name__ == '__main__':
     vsig_f = np.array([0.5, 0.5])
     chi = np.array([1,0])
     phi = np.array([1,1])
-#     twoGroupSolver(sig_t, sig_s, vsig_f, lamb=0.7)
     S = solver(sig_t, sig_s, vsig_f, chi, phi)
     S.solve()
