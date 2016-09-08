@@ -15,7 +15,7 @@ rcParams.update({'figure.autolayout': True})
 from numpy.polynomial import Chebyshev
 
 class solver(object):
-    def __init__(self, sig_t, sig_s, vsig_f, chi, phi, k=1, lamb=1, basis='DLP', silent=True):
+    def __init__(self, sig_t, sig_s, vsig_f, chi, phi, k=1, lamb=1, basis='dlp', silent=True):
         self.sig_t = sig_t
         self.sig_s = sig_s
         self.vsig_f = vsig_f
@@ -38,22 +38,23 @@ class solver(object):
         # Get total cross section
         self.Sig_t = np.sum(self.basis[0] * self.sig_t * self.phi) / np.sum(self.basis[0] * self.phi) 
         # Assume isotropic flux, i.e. psi = phi / (4\pi)
-        self.delta = self.basis.dot((self.sig_t - self.Sig_t) * self.phi) / np.sum(self.phi)
+        self.delta = self.basis.dot((self.sig_t - self.Sig_t) * self.phi) / np.sum(self.phi) * self.G / np.sqrt(self.G)
+        self.delta[0] = 0
         
         # Get scattering cross section
         self.Sig_s = np.zeros(self.G)
         for i in range(self.G):
             for g in range(self.G):
                 self.Sig_s[i] += np.sum(self.basis[i][g] * self.sig_s[:,g] * self.phi)
-        self.Sig_s /= np.sum(self.phi) 
+        self.Sig_s *= 1 / np.sum(self.phi) * self.G / np.sqrt(self.G)
         
         # Get fission cross section
-        self.vSig_f = self.basis.dot(self.vsig_f * self.phi) / np.sum(self.phi)
+        self.vSig_f = self.basis.dot(self.vsig_f * self.phi) / np.sum(self.phi) * self.G / np.sqrt(self.G)
         self.Chi = self.basis.dot(self.chi) 
-
+        print self.Chi
         
     def getBasis(self):
-        if self.basisType == 'DLP':
+        if self.basisType == 'dlp':
             self.DLP()
         elif self.basisType == 'mDLP':
             self.mDLP()
@@ -61,12 +62,20 @@ class solver(object):
             self.cheb()
         elif self.basisType == 'dct':
             self.DCT()
+        else:
+            raise ValueError('Basis not implemented')
+        
+        self.basis *= -1.0 if self.basis[0,0] < 0 else 1.0
+        print self.basis
             
     def DCT(self):
         self.basis = np.zeros((self.G, self.G))
         for i in range(self.G):
             for j in range(self.G):
                 self.basis[j,i] = np.cos(np.pi / self.G * (i + 0.5) * j)
+        
+        # Orthogonalize the basis functions
+#         self.basis, _ = LA.qr(self.basis, 'full')
     
         
     def DLP(self):
@@ -85,8 +94,9 @@ class solver(object):
                     C2 = i * (self.G - i)
                     self.basis[j,i] = (C1 * self.basis[j,i - 1] - C0 * self.basis[j,i - 2]) / C2
                 
+                
 #         # Orthogonalize the basis functions
-#         self.basis, _ = LA.qr(self.basis, 'full')
+        self.basis, _ = LA.qr(self.basis, 'full')# / -np.sqrt(2) * 2
 #         # Structure so that self.basis[1] provides a vector of the linear function
 #         self.basis = self.basis.T
 
@@ -192,28 +202,34 @@ class twoGroupSolver(object):
         
 if __name__ == '__main__':
     N = 50
-    sig_t = np.array([1,3])
+    basis = 'dlp'
+    sig_t = np.array([1,2])
     sig_s = np.array([[0.3, 0.3],
                       [0, 0.3]])
     vsig_f = np.array([0.5, 0.5])
     chi = np.array([1,0])
-    phi = np.array([1,0.05])
-    input = np.linspace(0,0.5,N)
+    phi = np.array([1,1])
+    inputs = np.linspace(0,0.5,N)
     fs = np.zeros(N)
-    for i, f in enumerate(input):
+    print twoGroupSolver(sig_t, sig_s, vsig_f).output()
+    print solver(sig_t, sig_s, vsig_f, chi, phi, basis=basis).output()
+    asdf
+    for i, f in enumerate(inputs):
         phi = np.array([1, f])
-        S = solver(sig_t, sig_s, vsig_f, chi, phi, basis='DLP')
+        S = solver(sig_t, sig_s, vsig_f, chi, phi, basis=basis)
+        S.output()
+        asdf
         S.update()
         fs[i] = S.phi[1] / S.phi[0]
         print S.phi[1] / S.phi[0]
     
-    plt.plot(input, fs, 'b-')
-    plt.plot(input, input, 'k--')
-    plt.plot((input[1:] + input[:-1]) / 2.0, (fs[1:] - fs[:-1]) / (input[1:] - input[:-1]), 'r--')
+    plt.plot(inputs, fs, 'b-')
+    plt.plot(inputs, inputs, 'k--')
+    plt.plot((inputs[1:] + inputs[:-1]) / 2.0, (fs[1:] - fs[:-1]) / (inputs[1:] - inputs[:-1]), 'r--')
     plt.ylim(-1.5, 1.0)
     plt.xlabel('input')
     plt.ylabel('output')
     plt.legend(['f(x)', 'y=x', 'f\'(x)'], loc=4)
     plt.xticks(np.linspace(0,0.5,11))
     plt.grid()
-    plt.savefig('dlp3.pdf')
+    plt.savefig('{}{}.pdf'.format(basis, sig_t[1]))
