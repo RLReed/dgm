@@ -15,7 +15,7 @@ rcParams.update({'figure.autolayout': True})
 import h5py
 
 class solver(object):
-    def __init__(self, sig_t, sig_s, vsig_f, chi, phi=None, k=1, lamb=1, basis='dlp', silent=True, pattern=None, division=None, analyticError=False):
+    def __init__(self, sig_t, sig_s, vsig_f, chi, phi=None, k=1, lamb=1, basis='dlp', silent=True, pattern=None, division=None, analyticError=False, truncate=None):
         # Store all arguments
         self.sig_t = sig_t
         self.sig_s = sig_s
@@ -31,7 +31,10 @@ class solver(object):
         self.ep = 1e-8
         self.basisType = basis
         self.silent = silent
-        self.analyticError = analyticError
+        if truncate is None:
+            self.analyticError = analyticError
+        else:
+            self.analyticError = False
         
         # Number of fine groups
         self.nFine = len(self.sig_t)
@@ -50,12 +53,14 @@ class solver(object):
         self.nCourse = len(self.courseStruct)
         
         if basis != 'mod':
-            self.basis = [self.getBasis(G) for G in self.fineStruct]
+            self.basis = [self.getBasis(G, trunc=truncate) for G in self.fineStruct]
         else:
             self.b = [0] + np.cumsum(self.fineStruct).tolist()
             pat = [pattern[self.b[i]:self.b[i+1]] for i in range(self.nCourse)]
             
-            self.basis = [self.getBasis(G, pat[i]) for G in self.fineStruct]
+            self.basis = [self.getBasis(G, pat[i], trunc=truncate) for i, G in enumerate(self.fineStruct)]
+        self.coef = [basis[1] for basis in self.basis]
+        self.basis = [basis[0] for basis in self.basis]
         
     def calcCrossSections(self):
         self.splitPhi()
@@ -75,7 +80,7 @@ class solver(object):
             self.Sig_t[G] = sig_t.dot(self.phi[G]) / phiG
 
             self.delta[G] = self.basis[G].dot(np.diag(sig_t - self.Sig_t[G])).dot(self.phi[G]) / phiG
-            self.delta[G][0] = 0
+            #self.delta[G][0] = 0
             
             # Get fission cross section
             self.vSig_f[G] = self.vsig_f[self.b[G]:self.b[G+1]].dot(self.phi[G]) / phiG
@@ -91,7 +96,7 @@ class solver(object):
         #self.output()
         #print 
         
-    def getBasis(self, G, pattern=None):
+    def getBasis(self, G, pattern=None, trunc=None):
         if G > 1:
             if self.basisType.lower() == 'dlp':
                 basis = self.DLP(G)
@@ -113,11 +118,17 @@ class solver(object):
                 print # blank line
         else:
             basis = np.ones(1)
-        return basis
+            
+        coef = np.diag(basis.dot(basis.T)) if basis.shape != (1,) else basis
+            
+        if trunc is not None:
+            return (basis[:-trunc], coef[:-trunc] if trunc < len(basis) else basis[0], coef[0])
+        else:
+            return basis, coef
          
     def mod(self, G, pattern):
-        basis = np.ones((G, G))
-        basis[1:] = np.array(pattern)
+        basis = np.ones((G,G))
+        basis[1:] = self.DLP(G)[1:] * np.array(pattern)
         
         # Orthogonalize the basis functions
         basis, _ = LA.qr(basis.T, 'full')
@@ -184,26 +195,19 @@ class solver(object):
         # Expand phi
         Phi = [self.basis[G].dot(self.phi[G]) for G in range(self.nCourse)]
         phi0 = np.array([p[0] if type(p) != np.float64 else p for p in Phi])
-#         if type(Phi[0]) != np.float64:
-#             if type(Phi[1]) != np.float64:
-#                 self.coefRatio = Phi[0][0] / Phi[0][1]
-#             else:
-#                 self.coefRatio = Phi[0][0] / Phi[0][1]
+        for G in range(self.nCourse):
+            s = phi0.dot(self.Sig_s[G])
+            f = np.array(self.Chi[G]) / self.k * phi0.dot(self.vSig_f)
+            d = np.array(self.delta[G]) * phi0[G]
+            Phi[G] = (s + f - d) / self.Sig_t[G]
         
         for G in range(self.nCourse):
-            s = np.array(self.Sig_s[G]).T.dot(phi0)
-            f = np.array(self.Chi[G]) / self.k * phi0.dot(self.vSig_f)
-            d = np.array(self.delta[G]).dot(Phi[G][0]) if type(Phi[G]) != np.float64 else self.delta[G] * Phi[G]
-            Phi[G] = (s + f - d) / self.Sig_t[G]
-             
-        for G in range(self.nCourse):
-            self.phi[G] = (1 - self.lamb) * self.phi[G] + self.lamb * self.basis[G].T.dot(Phi[G])
+            self.phi[G] = (1 - self.lamb) * self.phi[G] + self.lamb * self.basis[G].T.dot(Phi[G] / self.coef[G])
             
         self.joinPhi()
         self.phi /= self.phi[0]
         
         # Update k        
-        
         t = np.sum([self.sig_t[g] * self.phi[g] for g in range(self.nFine)])
         s = np.sum([np.array(self.sig_s[g]).dot(self.phi) for g in range(self.nFine)])
         f = np.sum([self.chi[g] * np.array(self.vsig_f).dot(self.phi) for g in range(self.nFine)])
@@ -228,30 +232,34 @@ class solver(object):
         else:
             self.ks = []
             self.phis = []
-            self.coefs = []
             while True:
                 old = self.phi[:]
                 self.ks.append(self.k)
                 self.phis.append(self.phi[:])
-                if not self.silent:
-                    print 'iteration = {:3}, k = {:12.10f}, eps = {:12.10f}'.format(it, self.k, ep)
-                    print 'phi = {}'.format(self.phi)
                 self.calcCrossSections()
                 self.update()
-#                 self.coefs.append(self.coefRatio)
                 it += 1
-                #if it < 100:
-                #self.phi = np.array([p if p > 0 else 0.5 * self.phis[-1][i] for i, p in enumerate(self.phi)])
-                if ep < self.ep: 
+                if ep < self.ep:# and np.all(self.phi > 0): 
+                    break
+                elif np.isnan(self.k):
+                    return np.inf, it, np.inf
+                elif it > 30000:
                     break
                 else:
                     if self.analyticError:
                         ep = LA.norm(self.phi - self.pattern) / LA.norm(self.pattern)
                     else:
                         ep = LA.norm(self.phi - old) / LA.norm(old)
-            print 'analytic error = {}'.format(LA.norm(self.phi - self.pattern) / LA.norm(self.pattern))
+                if not self.silent:
+                    print 'iteration = {:3}, k = {:12.10f}, eps = {:12.10f}'.format(it, self.k, ep)
+                    #print 'phi = {}'.format(self.phi)
+            print 'iteration = {:3}, k = {:12.10f}, eps = {:12.10f}'.format(it, self.k, ep)
+            print 'phi = {}'.format(self.phi)
+            analyticError = LA.norm(self.phi - self.pattern) / LA.norm(self.pattern)
+            print 'analytic error = {}'.format(analyticError)
             self.phis = np.array(self.phis)
             self.makePlots(it)
+            return analyticError, it, self.k
                 
     def makePlots(self, it):
         plt.plot(range(it), self.ks)
@@ -272,13 +280,6 @@ class solver(object):
         plt.savefig('phi_v_iteration_{}.pdf'.format(self.basisType))
         plt.clf()
         
-#         plt.plot(range(it), self.coefs)
-#         plt.xlabel('iterations')
-#         plt.ylabel('$a_0 / a_1$')
-#         plt.grid()
-#         plt.savefig('coefRatio.pdf'.format(self.basisType))
-#         plt.clf()
-                
     def output(self):
         print 'Sig_t = {}'.format(self.Sig_t)
         print 'delta = {}'.format(self.delta)
@@ -340,7 +341,7 @@ class twoGroupSolver(object):
         
 if __name__ == '__main__':
     N = 50
-    basis = 'dlp'
+    basis = 'mod'
     groups = 238
     
     np.set_printoptions(suppress=True)
@@ -354,7 +355,7 @@ if __name__ == '__main__':
         sig_f = np.array([0.0028231045, 0.0096261203, 0.1123513981])
         chi = np.array([0.9996892490, 0.0003391680, 0.000000000])
         division=None
-        division=[1,2]
+        division=[2]
     elif groups == 7:
         sig_t = np.array([0.21245,0.355470, 0.48554, 0.5594, 0.31803, 0.40146, 0.57061])
         sig_s = np.array([[1.27537e-1, 4.2378e-2, 9.4374e-6, 5.5163e-9, 0, 0, 0],
@@ -368,8 +369,8 @@ if __name__ == '__main__':
         sig_f = np.array([7.21206e-3, 8.19301e-4, 6.4532e-3, 1.85648e-2, 1.78084e-2, 8.30348e-2, 2.16004e-1])
         chi = np.array([5.87910e-1, 4.1176e-1, 3.3906e-4, 1.1761e-7, 0, 0, 0])
         division = [4]
-        division = range(1,7)
-        #division = None
+        #division = range(1,7, 1)
+        division = None
     elif groups == 238:
         # 238 group data from c5g7 geometry
         # Using UO2 data
@@ -401,11 +402,13 @@ if __name__ == '__main__':
                     l.append(i-1)
                     break
         division = [8, 16, 30, 40, 57, 63, 75, 93, 103, 111, 116, 121, 132, 139, 160, 190, 195, 200, 205, 210, 215, 220, 225, 230, 235]
+        division = [50, 100, 150, 210]
         plt.plot(sig_t)
         plt.plot(division, np.ones(len(division)), 'go')
         #plt.show()
         #division = None
-        division = range(2,236,2)
+        #division = range(1,236,5)
+        
         
     vsig_f = v * sig_f
     # Solve analytic:
@@ -450,8 +453,21 @@ if __name__ == '__main__':
     
     inputs = np.linspace(0,0.5,N)
     fs = np.zeros(N)
-    S = solver(sig_t, sig_s, vsig_f, chi, k=analK, phi=analytic, basis=basis, silent=False, pattern=analytic, division=division, lamb=0.3)
-    S.solve()
+    S = solver(sig_t, sig_s, vsig_f, chi, basis=basis, silent=False, pattern=analytic, division=division, lamb=0.2)
+    e, i, k = S.solve()
+    err = [e]
+    it = [i]
+    errk = [abs(k - analK) / analK]
+    for trunc in range(1, 27):
+        print trunc
+        S = solver(sig_t, sig_s, vsig_f, chi, basis=basis, silent=False, pattern=analytic, division=division, lamb=0.2, truncate=trunc)
+        e, i, k = S.solve()
+        err.append(e)
+        it.append(i)
+        errk.append(abs(k - analK) / analK)
+    np.savetxt('error_{}.dat'.format(basis), err)
+    np.savetxt('it_{}.dat'.format(basis), it)
+    np.savetxt('errk_{}.dat'.format(basis), errk)
     asdf
     for i, f in enumerate(inputs):
         phi = np.array([1, f, f ** 2])
