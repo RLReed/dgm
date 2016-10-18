@@ -133,7 +133,7 @@ if __name__ == "__main__":
     plt.semilogy(range(G-1, 0, -1), eps)
     plt.savefig('fixed_{}{}.pdf'.format('dlp', G))
     plt.show()
-    np.savetxt('fixed_dlp{}'.format(G), eps)
+    np.savetxt('fixed_dlp{}.dat'.format(G), eps)
     
     
     

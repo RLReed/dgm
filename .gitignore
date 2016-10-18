@@ -1,6 +1,8 @@
 # Other files
 output.txt
 prismgui.kv
+*.dat
+*.pdf
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
