@@ -15,7 +15,12 @@ rcParams['axes.labelsize'] = 20
 rcParams.update({'figure.autolayout': True})
 from cycler import cycler
 plt.rc('axes', prop_cycle=(cycler('color', ['r', 'g', 'b', 'y', 'k', 'r', 'g', 'b', 'y', 'k', 'r', 'g', 'b', 'y', 'k', 'r', 'g', 'b', 'y', 'k']) +
-                           cycler('linestyle', ['-', '-', '-', '-', '-', '--', '--', '--', '--', '--', ':', ':', ':', ':', ':', '-.', '-.', '-.', '-.', '-.'])))
+                           cycler('linestyle', ['-', '-', '-', '-', '-', '--', '--', '--', '--', '--', ':', ':', ':', ':', ':', '-.', '-.', '-.', '-.', '-.']) + 
+                           cycler('marker', ['', '', '', '', 'o', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''])))
+from mpi4py import MPI
+comm = MPI.COMM_WORLD
+size = comm.Get_size()
+rank = comm.Get_rank()
 
 class fixedSourceSolver(object):
     def __init__(self, sig_t, sig_s, Q, phi=None, lamb=1, truncate=None, bType='dlp', bPattern=None, division=None):
@@ -186,10 +191,19 @@ def getData(groups):
         S = np.array([5.87910e-1, 4.1176e-1, 3.3906e-4, 1.1761e-7, 0, 0, 0])
         division = [4]
     
+    elif groups == 69:
+        # 69 group data from uo2 pin cell geometry
+        with h5py.File('69-groupData/uo2XS-0.3-69.h5', 'r') as f:
+            sig_t = f['sig_t'][...]
+            sig_s = f['sig_s'][...]
+            S = f['chi'][...]
+        division = [27, 54]
+        #division = None
+    
     elif groups == 238:
         # 238 group data from c5g7 geometry
         # Using UO2 data
-        with h5py.File('uo2XS238-5pct.h5', 'r') as f:
+        with h5py.File('uo2XS-0.3.h5', 'r') as f:
             sig_t = f['sig_t'][...]
             sig_s = f['sig_s'][...]
             S = f['chi'][...]
@@ -258,91 +272,93 @@ def plotPhi(phi):
     plt.xlabel('Energy [eV]')
     plt.show()
     
-def runFracUO2():
-    # 238 group data from UO2 pin cell geometry
-    with h5py.File('uo2XS-0.3.h5', 'r') as f:
-        sig_t = f['sig_t'][...]
-        sig_s = f['sig_s'][...]
-        S = f['chi'][...]
-        #S = np.ones(groups)
-        p = f['phi'][...]
-    div = [50, 100, 150, 200]
-    #division = [236]
+def solveFixedSource(sig_t, sig_s, S): 
+    phi = np.linalg.solve(np.diag(sig_t) - sig_s, S)
+    return phi / np.linalg.norm(phi)
+
+def getName(G):
+    if G == 238:
+        return 'uo2XS-{}.h5'
+    if G == 69:
+        return '69-groupData/uo2XS-{}-69.h5'
+
+def runFracUO2(G):
+    sig_t, sig_s, S, div = getData(G)
+
+    phi = solveFixedSource(sig_t, sig_s, S)
+    phi /= np.linalg.norm(phi)
+    # plotPhi(phi)
+    d = np.array([0] + div + [G])
+    d = max(d[1:] - d[:-1])
     
-    M = np.diag(sig_t) - sig_s
-    print 'Fixed Source Problem'
-    phi = np.linalg.solve(M, S)
-    print p - phi
-    asdf
-    print phi
-    plotPhi(phi)
-    
-    for f in np.linspace(0,1,21):
-        with h5py.File('uo2XS-{}.h5'.format(f), 'r') as F:
-            pat = F['phi'][...]
+    for f in np.linspace(0,1,21)[rank::size]:
+        with h5py.File(getName(G).format(f), 'r') as F:
+            pat = solveFixedSource(F['sig_t'][...], F['sig_s'][...], F['chi'][...])
             
         bType = 'mdlp'
         eps = []
-        x = range(50)
+        x = range(d)
         for trunc in x:
             P = fixedSourceSolver(sig_t, sig_s, S, lamb=0.05, truncate=trunc, bType=bType, bPattern=pat, division=div).solve(silent=True)
+            P /= np.linalg.norm(P)
             
             print 'Fixed Source Problem'
             #print phi
             
             ep = np.linalg.norm(phi-P) / np.linalg.norm(phi)
-            print 'i = {}, error = {}'.format(trunc, ep)
+            print 'rank = {}, DOF = {}, error = {}'.format(rank, trunc, ep)
             eps.append(ep)
-        np.savetxt('UO2-{}.dat'.format(f), eps)
+        np.savetxt('UO2-{}-{}.dat'.format(f, G), eps)
         
-    bType = 'dlp'
-    eps = []
-    x = range(50)
-    for trunc in x:
-        P = fixedSourceSolver(sig_t, sig_s, S, lamb=0.05, truncate=trunc, bType=bType, bPattern=pat, division=div).solve(silent=True)
-        
-        print 'Fixed Source Problem'
-        #print phi
-        
-        ep = np.linalg.norm(phi-P) / np.linalg.norm(phi)
-        print 'i = {}, error = {}'.format(trunc, ep)
-        eps.append(ep)
-    np.savetxt('UO2-dlp.dat', eps)
-    plotFracStudy()
+    if rank == size - 1:
+        bType = 'dlp'
+        eps = []
+        x = range(d)
+        for trunc in x:
+            P = fixedSourceSolver(sig_t, sig_s, S, lamb=0.05, truncate=trunc, bType=bType, bPattern=pat, division=div).solve(silent=True)
+            P /= np.linalg.norm(P)
+            print 'Fixed Source Problem'
+            #print phi
+            
+            ep = np.linalg.norm(phi-P)
+            print 'rank = {}, DOF = {}, error = {}'.format(rank, trunc, ep)
+            eps.append(ep)
+        np.savetxt('UO2-dlp-{}.dat'.format(G), eps)
+        #plotFracStudy(G)
     
-def plotFracStudy():
-    x = range(50)
+def plotFracStudy(G):
+    sig_t, sig_s, S, div = getData(G)
+    d = np.array([0] + div + [G])
+    d = max(d[1:] - d[:-1])
+    x = range(d)
     
-    plt.semilogy(x, np.loadtxt('UO2-dlp.dat'), label='DLP')
-    for f in np.linspace(0,1,21):
-        plt.semilogy(x, np.loadtxt('UO2-{}.dat'.format(f)), label='mDLP {}'.format(f))
+    plt.semilogy(x, np.loadtxt('UO2-dlp-{}.dat'.format(G)), label='DLP')
+    for f in np.linspace(0,1,11):
+        plt.semilogy(x, np.loadtxt('UO2-{}-{}.dat'.format(f, G)), label='mDLP {}'.format(f))
     
     plt.legend(loc=0,ncol=3)
-    plt.ylabel('Relative error in $L_2$ norm')
-    plt.xlabel('Degrees of freedom in basis')
-    plt.savefig('UO2_comparison.pdf')
+    plt.ylabel('$||\phi-\phi^*||$')
+    plt.xlabel('Basis functions included in each course group')
+    plt.savefig('UO2_comparison-{}.pdf'.format(G))
     plt.show()
     
-def runThings():
-    name = 'Triga'
-    pat = np.loadtxt('phi{}.dat'.format(name))
+def runThings(G):
+    with h5py.File(getName(G).format(0.3), 'r') as F:
+        pat = solveFixedSource(F['sig_t'][...], F['sig_s'][...], F['chi'][...])
+        pat /= np.linalg.norm(pat)
     
-    G = 238
     bType = 'mdlp'
     sig_t, sig_s, S, div = getData(G)
     
-    M = np.diag(sig_t) - sig_s
-    print 'Fixed Source Problem'
-    phi = np.linalg.solve(M, S)
-    print phi
-    plotPhi(phi)
+    phi = solveFixedSource(sig_t, sig_s, S)
+    phi /= np.linalg.norm(phi)
     
     eps = []
     L = div[0] if div is not None else G-1
     x = range(L)
     for trunc in x:
         P = fixedSourceSolver(sig_t, sig_s, S, lamb=0.05, truncate=trunc, bType=bType, bPattern=pat, division=div).solve(silent=True)
-        
+        P /= np.linalg.norm(P)
         print 'Fixed Source Problem'
         #print phi
         
@@ -361,9 +377,10 @@ def runThings():
         np.savetxt('fixed_{}{}.dat'.format(bType, G), eps)
         
 if __name__ == "__main__":
-    plotFracStudy()
-    #runFracUO2()
-    
+    G = 238
+    #runFracUO2(G)
+    plotFracStudy(G)
+    #runThings(G)
     
     
     
