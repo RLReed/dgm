@@ -1,5 +1,6 @@
 from __future__ import division
 import numpy as np
+from numpy.linalg import norm
 import matplotlib.pyplot as plt
 import h5py
 # Make plots look nicer
@@ -117,18 +118,18 @@ class fixedSourceSolver(object):
         ep = 1
         i = 0
         if not silent:
-            print i, ep#, self.phi
+            print i, ep
         while ep > 1e-12:
             old = self.phi.copy()
             self.calcDGMCrossSections()
             self.update()
             if analytic is None:
-                ep = np.linalg.norm(old-self.phi)
+                ep = norm(old-self.phi)
             else:
-                ep = np.linalg.norm(analytic-self.phi)
+                ep = norm(analytic-self.phi)
             i += 1
             if not silent:
-                print i, ep#, self.phi
+                print i, ep
             if i > 10000 and False:
                 print 'WARNING: iteration not converged'
                 break
@@ -274,7 +275,7 @@ def plotPhi(phi):
     
 def solveFixedSource(sig_t, sig_s, S): 
     phi = np.linalg.solve(np.diag(sig_t) - sig_s, S)
-    return phi / np.linalg.norm(phi)
+    return phi / norm(phi)
 
 def getName(G):
     if G == 238:
@@ -286,7 +287,7 @@ def runFracUO2(G):
     sig_t, sig_s, S, div = getData(G)
 
     phi = solveFixedSource(sig_t, sig_s, S)
-    phi /= np.linalg.norm(phi)
+    phi /= norm(phi)
     # plotPhi(phi)
     d = np.array([0] + div + [G])
     d = max(d[1:] - d[:-1])
@@ -300,12 +301,9 @@ def runFracUO2(G):
         x = range(d)
         for trunc in x:
             P = fixedSourceSolver(sig_t, sig_s, S, lamb=0.05, truncate=trunc, bType=bType, bPattern=pat, division=div).solve(silent=True)
-            P /= np.linalg.norm(P)
+            P /= norm(P)
             
-            print 'Fixed Source Problem'
-            #print phi
-            
-            ep = np.linalg.norm(phi-P) / np.linalg.norm(phi)
+            ep = norm(phi-P) / norm(phi)
             print 'rank = {}, DOF = {}, error = {}'.format(rank, trunc, ep)
             eps.append(ep)
         np.savetxt('UO2-{}-{}.dat'.format(f, G), eps)
@@ -316,15 +314,12 @@ def runFracUO2(G):
         x = range(d)
         for trunc in x:
             P = fixedSourceSolver(sig_t, sig_s, S, lamb=0.05, truncate=trunc, bType=bType, bPattern=pat, division=div).solve(silent=True)
-            P /= np.linalg.norm(P)
-            print 'Fixed Source Problem'
-            #print phi
+            P /= norm(P)
             
-            ep = np.linalg.norm(phi-P)
+            ep = norm(phi-P)
             print 'rank = {}, DOF = {}, error = {}'.format(rank, trunc, ep)
             eps.append(ep)
         np.savetxt('UO2-dlp-{}.dat'.format(G), eps)
-        #plotFracStudy(G)
     
 def plotFracStudy(G):
     sig_t, sig_s, S, div = getData(G)
@@ -345,24 +340,24 @@ def plotFracStudy(G):
 def runThings(G):
     with h5py.File(getName(G).format(0.3), 'r') as F:
         pat = solveFixedSource(F['sig_t'][...], F['sig_s'][...], F['chi'][...])
-        pat /= np.linalg.norm(pat)
+        pat /= norm(pat)
     
     bType = 'mdlp'
     sig_t, sig_s, S, div = getData(G)
     
     phi = solveFixedSource(sig_t, sig_s, S)
-    phi /= np.linalg.norm(phi)
+    phi /= norm(phi)
     
     eps = []
     L = div[0] if div is not None else G-1
     x = range(L)
     for trunc in x:
         P = fixedSourceSolver(sig_t, sig_s, S, lamb=0.05, truncate=trunc, bType=bType, bPattern=pat, division=div).solve(silent=True)
-        P /= np.linalg.norm(P)
+        P /= norm(P)
         print 'Fixed Source Problem'
         #print phi
         
-        ep = np.linalg.norm(phi-P) / np.linalg.norm(phi)
+        ep = norm(phi / P)
         print 'i = {}, error = {}'.format(trunc, ep)
         eps.append(ep)
         

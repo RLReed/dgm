@@ -1,6 +1,7 @@
 from __future__ import division
 import numpy as np
 import matplotlib.pyplot as plt
+from numpy.linalg import norm
 import h5py
 # Make plots look nicer
 from matplotlib import rc
@@ -124,7 +125,6 @@ class fixedSourceSolver(object):
         phi = np.concatenate(phi)
         
         self.phi = (1 - self.lamb) * self.phi + self.lamb * phi
-        #self.phi /= self.phi[0]
         self.k = np.sum(self.chi * self.vsig_f.dot(self.phi)) / np.sum(np.diag(self.sig_t).dot(self.phi) - self.sig_s.dot(self.phi))
         
     def solve(self, analytic=None, silent=False):
@@ -137,9 +137,9 @@ class fixedSourceSolver(object):
             self.calcDGMCrossSections()
             self.update()
             if analytic is None:
-                ep = np.linalg.norm(old-self.phi)
+                ep = norm(old-self.phi)
             else:
-                ep = np.linalg.norm(analytic-self.phi)
+                ep = norm(analytic-self.phi)
             i += 1
             if not silent:
                 print 'it = {}, ep = {}, k = {}\r'.format(i, ep, self.k),
@@ -352,13 +352,13 @@ def runFracUO2(G):
     d = max(d[1:] - d[:-1])
     
     phi, k = solveEigenProblem(sig_t, sig_s, vsig_f, chi)
-    phi /= np.linalg.norm(phi)
+    phi /= norm(phi)
     #plotPhi(phi)
     
     for f in np.linspace(0,1,21)[rank::size]:
         with h5py.File(getName(G).format(f), 'r') as F:
             pat, _ = solveEigenProblem(F['sig_t'][...], F['sig_s'][...], F['vsig_f'][...], F['chi'][...])
-            pat /= np.linalg.norm(pat)
+            pat /= norm(pat)
         bType = 'mdlp'
         eps = []
         epsk = []
@@ -366,11 +366,9 @@ def runFracUO2(G):
         ps = []
         for trunc in x:
             P, K = fixedSourceSolver(sig_t, sig_s, vsig_f, chi, k=k, lamb=0.1, truncate=trunc, bType=bType, bPattern=pat, division=div).solve(silent=True)
-            P /= np.linalg.norm(P)
-            print 'Eigen Value Problem'
-            #print phi
+            P /= norm(P)
             ps.append(P[:])
-            ep = np.linalg.norm(phi-P)
+            ep = norm(phi-P)
             epk = abs(k - K) / k
             print 'rank = {}, DOF = {}, error = {}'.format(rank, trunc, ep)
             eps.append(ep)
@@ -387,10 +385,9 @@ def runFracUO2(G):
         x = range(d)
         for trunc in x:
             P, K = fixedSourceSolver(sig_t, sig_s, vsig_f, chi, k=k, lamb=0.1, truncate=trunc, bType=bType, bPattern=None, division=div).solve(silent=True)
-            P /= np.linalg.norm(P)
-            print 'Eigen Value Problem'
+            P /= norm(P)
             ps.append(P[:])
-            ep = np.linalg.norm(phi-P) / np.linalg.norm(phi)
+            ep = norm(phi-P)
             epk = abs(k - K) / k
             print 'rank = {}, DOF = {}, error = {}'.format(rank, trunc, ep)
             eps.append(ep)
@@ -546,15 +543,14 @@ def runThings(G):
     plotBasis(G, bType, phi)
     #plotPhi(phi)
     P, kk = fixedSourceSolver(sig_t, sig_s, vsig_f, chi, lamb=0.01, phi=phi, k=k, truncate=None, bType=bType, bPattern=phi, division=div).solve(silent=False)
-    #print phi, P / P[0] * phi[0]
-    print np.linalg.norm(phi - P / P[0] * phi[0])
+    print norm(phi / norm(phi) - P / norm(P))
     print k - kk
         
 if __name__ == "__main__":
     G = 238
-    #runFracUO2(G)
+    runFracUO2(G)
     #plotFracStudy(G)
-    runThings(G)
+    #runThings(G)
     
     
     
